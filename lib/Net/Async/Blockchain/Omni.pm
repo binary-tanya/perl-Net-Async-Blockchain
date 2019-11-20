@@ -122,8 +122,10 @@ async sub transform_transaction {
     # the command listtransactions will guarantee that this transactions is from or to one
     # of the node addresses.
     my $received_transaction;
+    my $detail_transaction;
     try {
         $received_transaction = await $self->rpc_client->get_transaction($decoded_raw_transaction->{txid});
+        $detail_transaction   = await $self->rpc_client->get_detail_transaction($decoded_raw_transaction->{txid});
     }
     catch {
         # transaction not found
@@ -134,28 +136,28 @@ async sub transform_transaction {
     return undef unless $received_transaction && $received_transaction->{ismine};
 
     my $amount = Math::BigFloat->new($received_transaction->{amount});
-    my $fee = Math::BigFloat->new($received_transaction->{fee} // 0);
-
+    my $fee    = Math::BigFloat->new($received_transaction->{fee} // 0);
+    my $block  = Math::BigInt->new($received_transaction->{block});
     my ($from, $to) =
         await Future->needs_all(map { $self->rpc_client->validate_address($received_transaction->{$_}) } qw(sendingaddress referenceaddress));
 
+    my %category;
+
+    for my $tx ($detail_transaction->{details}->@*) {
+        $category{$tx->{category}} = 1;
+    }
+    my @categories = keys %category;
+
     # it can be receive, sent, internal
     # if categories has send and receive it means that is an internal transaction
-    my $transaction_type;
-    if ($from->{ismine} && $to->{ismine}) {
-        $transaction_type = 'internal';
-    } elsif ($from->{ismine}) {
-        $transaction_type = 'sent';
-    } elsif ($to->{ismine}) {
-        $transaction_type = 'receive';
-    }
+    my $transaction_type = scalar @categories > 1 ? 'internal' : $categories[0];
 
     return undef unless $transaction_type;
 
     my $transaction = Net::Async::Blockchain::Transaction->new(
         currency     => $self->currency_symbol,
         hash         => $decoded_raw_transaction->{txid},
-        block        => $received_transaction->{block},
+        block        => $block,
         from         => $from->{address},
         to           => [$to->{address}],
         amount       => $amount,
